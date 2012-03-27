@@ -3,12 +3,12 @@
 
 start(Port) ->
 	{ok, Socket} = gen_udp:open(Port),
-	Pid = spawn(fun() -> listen(Socket, []) end),
-	register(node_listen, Pid),
-	gen_udp:controlling_process(Socket, Pid).
+	register(node_ets, spawn(fun() -> ets_loop([]) end)),
+	register(node_listen, spawn(fun() -> listen(Socket) end)),
+	gen_udp:controlling_process(Socket, erlang:whereis(node_listen)).
 
 flush_node_table() ->
-	node_listen ! {self(), flush},
+	node_ets ! {self(), flush},
 	receive
 		Reply -> Reply
 	after
@@ -16,7 +16,7 @@ flush_node_table() ->
 	end.
 
 mark_node_false(Node) ->
-	node_listen ! {self(), markFalse, Node},
+	node_ets ! {self(), markFalse, Node},
 	receive
 		Reply -> Reply	
 	after
@@ -24,7 +24,7 @@ mark_node_false(Node) ->
 	end.
 
 get_node_table() ->
-	node_listen ! {self(), getNodeTable},
+	node_ets ! {self(), getNodeTable},
 	receive
 		Reply -> Reply	
 	after
@@ -37,25 +37,36 @@ stop() ->
 		Msg -> Msg
 	end.
 
-listen(Socket, []) ->
+ets_loop([]) ->
 	TableId = ets:new(nodes, [ordered_set]),
-	listen(Socket, TableId);
+	ets_loop(TableId);
 
-listen(Socket, TableId) ->
+ets_loop(TableId) ->
+	receive
+		{From, flush} ->
+			From ! ets:delete_all_objects(TableId),
+			ets_loop(TableId);
+		{From, markFalse, Key} ->
+			From ! ets:update_element(TableId, Key, {2, false}),
+			ets_loop(TableId);
+		{From, getNodeTable} ->
+			From ! TableId,
+			ets_loop(TableId);
+		{From, insert, Node} ->
+			ets:insert(TableId, Node),
+			ets_loop(TableId);
+		Msg -> ok, ets_loop(TableId)
+	end.	
+
+listen(Socket) ->
 	receive
 		{udp, _, IP, Port, Msg} ->
-			ets:insert(TableId, {Msg,true}),
 			%%io:format("Got a registration from ~w:~w~nMessage: ~w~n", [IP, Port, erlang:list_to_atom(Msg)]),
-			listen(Socket,TableId);
+			etsproc ! {self(), insert, {Msg,true}},
+			listen(Socket);
 		{From, stop} ->
 			From ! gen_udp:close(Socket);
-		{From, flush} ->
-			From ! ets:delete_all_objects(TableId);
-		{From, markFalse, Key} ->
-			From ! ets:update_element(TableId, Key, {2, false});
-		{From, getNodeTable} ->
-			From ! TableId;
 		Msg ->
 			io:format("~w", [Msg]),
-			listen(Socket, TableId)
+			listen(Socket)
 	end.
