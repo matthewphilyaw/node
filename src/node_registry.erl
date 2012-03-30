@@ -1,72 +1,79 @@
 -module(node_registry).
--export([start/1, stop/0, flush_node_table/0, get_node_table/0, mark_node_false/1]).
+-export([start/2, stop/0]).
+-export([register_pid/1,unregister_pid/1]).
 
-start(Port) ->
+-define(TIMEOUT, 1000).
+
+%% API
+
+start(Port, Pids) ->
 	{ok, Socket} = gen_udp:open(Port),
-	register(node_ets, spawn(fun() -> ets_loop([]) end)),
-	register(node_listen, spawn(fun() -> listen(Socket) end)),
-	gen_udp:controlling_process(Socket, erlang:whereis(node_listen)).
+	register(node_registry, spawn(fun() -> 
+									listen({Socket, Pids})
+							      end)),
+	gen_udp:controlling_process(Socket, erlang:whereis(node_registry)).
 
-flush_node_table() ->
-	node_ets ! {self(), flush},
-	receive
-		Reply -> Reply
-	after
-		1000 -> {error, noreply}
-	end.
+register_pid(Pid) ->
+	send({reg, Pid}).
 
-mark_node_false(Node) ->
-	node_ets ! {self(), markFalse, Node},
-	receive
-		Reply -> Reply	
-	after
-		1000 -> {error, noreply}
-	end.
-
-get_node_table() ->
-	node_ets ! {self(), getNodeTable},
-	receive
-		Reply -> Reply	
-	after
-		1000 -> {error, noreply}
-	end.
+unregister_pid(Pid) ->
+	send({del, Pid}).
 
 stop() ->
-	node_listen ! {self(), stop},
-	receive
-		Msg -> Msg
-	end.
+	send({stop}).
 
-ets_loop([]) ->
-	TableId = ets:new(nodes, [ordered_set]),
-	ets_loop(TableId);
+%% loops
 
-ets_loop(TableId) ->
-	receive
-		{From, flush} ->
-			From ! ets:delete_all_objects(TableId),
-			ets_loop(TableId);
-		{From, markFalse, Key} ->
-			From ! ets:update_element(TableId, Key, {2, false}),
-			ets_loop(TableId);
-		{From, getNodeTable} ->
-			From ! TableId,
-			ets_loop(TableId);
-		{From, insert, Node} ->
-			ets:insert(TableId, Node),
-			ets_loop(TableId);
-		Msg -> ok, ets_loop(TableId)
-	end.	
-
-listen(Socket) ->
-	receive
+listen(State = {Socket, Pids}) ->
+    receive
+		{udp, _, _, _, [35,35,110,111,100,101,35,35 | Node]} ->
+			notify(Pids, Node),
+			listen(State);	
 		{udp, _, IP, Port, Msg} ->
-			%%io:format("Got a registration from ~w:~w~nMessage: ~w~n", [IP, Port, erlang:list_to_atom(Msg)]),
-			etsproc ! {self(), insert, {Msg,true}},
-			listen(Socket);
-		{From, stop} ->
-			From ! gen_udp:close(Socket);
+			io:format("Received junk data from ~w:~w~nData: ~w~n", [IP, Port, Msg]),
+			listen(State);
+		{From, {stop}} ->
+			From ! ok,
+			gen_udp:close(Socket);
+		{From, {reg, Pid}} -> 
+			case duplicate_pid(Pid, Pids) of
+				true -> 
+					From ! {error, already_registered},
+					listen(State);
+				false -> 
+					From ! ok,
+					listen({Socket, [Pid | Pids]})
+			end;
+		{From, {del, Pid}} ->
+			From ! ok,
+			listen({Socket, lists:delete(Pid, Pids)});
 		Msg ->
 			io:format("~w", [Msg]),
-			listen(Socket)
+			{error, <<"Uknown Message">>}
 	end.
+
+%% private
+
+send(Command) ->
+	node_registry ! {self(), Command},
+	receive
+		Msg -> Msg
+	after
+		?TIMEOUT ->
+			{error, timeout}
+	end.
+
+notify([], _Node) -> ok;
+notify([Pid | Rest], Node) ->
+	Pid ! {newnode, list_to_atom(Node)},
+	notify(Rest, Node).
+
+duplicate_pid(Pid, Pids) ->
+	Exists = lists:foldl(fun(P, Match) -> 
+							case P == Pid of
+								true -> Match + 1;
+								false -> Match
+							end
+						 end, 0, Pids),
+	Exists > 0.
+		
