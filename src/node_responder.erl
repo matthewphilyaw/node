@@ -17,12 +17,12 @@ listen(Socket, ReplyPort) ->
 	receive
 		{udp, _, IP, Port, "ping"} ->
 			io:format("Got a ping from ~w:~w~n", [IP, Port]),
-			gen_udp:send(Socket,IP, ReplyPort, erlang:atom_to_list(node())),
-			io:format("Sent ~w~n", [node()]),
+			gen_udp:send(Socket,IP, ReplyPort, "##node##" ++ erlang:atom_to_list(node())),
+            io:format("Sent ~w~n", ["##node##" ++ erlang:atom_to_list(node())]),
 			listen(Socket, ReplyPort);
 		{From, stop} ->
 			From ! gen_udp:close(Socket);
 		Msg ->
 			io:format("~w", [Msg]),
 			listen(Socket, ReplyPort)
-	end.
+    end.

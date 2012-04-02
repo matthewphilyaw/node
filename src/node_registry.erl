@@ -48,7 +48,7 @@ listen(State = {Socket, Pids}) ->
             From ! ok,
             listen({Socket, lists:delete(Pid, Pids)});
         Msg ->
-            io:format("~w", [Msg]),
+            io:format("~w~n", [Msg]),
             {error, <<"Uknown Message">>}
     end.
 
